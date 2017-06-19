@@ -3,6 +3,15 @@ from tabulate import tabulate
 
 INVALPOS = INVALSIZE = -1
 
+codinaPart2Label = {
+	3: "SYSTEM",
+	4: "CACHEFS",
+	5: "DATAFS",
+	8: "UMS",
+	9: "SYSTEM2",
+	11: "DATAFS2"
+}
+
 def test():
 	p10 = Partition(10, start = 524, size = 1049, removable = False, label = "PIT")
 	p6 = Partition(6, start = 1573, size = 1573, removable = False, label = "CSPSA FS")
@@ -25,22 +34,27 @@ def test():
 	return [p10, p6, p7, p2, p14, p16, p1, p12, p13, p15, p17, p3, p4, p5, p8, p9, p11]
 
 class Partition:
-	def __init__(self, id, start = INVALPOS, size = INVALSIZE, computePos = False, removable = 0, filesystem = "", label = ""):
+	def __init__(self, id, start = INVALPOS, size = INVALSIZE, removable = False, filesystem = "", label = ""):
 		assert(size != INVALSIZE)
 		self.id = id
 		self.size = size
 		self.start = start
-		self.computePos = computePos
 		self.removable = removable
 		self.filesystem = filesystem
 		self.label = label
+		self.end = self.start + self.size
+			
+	def assignLabel(self, label):
+		self.label = label
 		
-		# we don't know partition start position yet
-		if not self.computePos:
-			self.end = self.start + self.size
+	def isRemovable(self):
+		return self.removable
+		
+	def setRemovable(self, removable):
+		self.removable = removable
 
 class PartitionMap:
-	def __init__(self, devPath, devSize, partitions, computePos = True):
+	def __init__(self, devPath, devSize, partitions):
 		p_count = len(partitions)
 		
 		partitions[0].prev = None
@@ -56,11 +70,7 @@ class PartitionMap:
 		partitions[p_count - 1].next = None
 		
 		self.partitions = partitions
-		
-		self.computePos = computePos
-		if self.computePos:
-			pass
-			
+					
 		self.devPath = devPath
 		self.devSize = devSize
 			
@@ -119,7 +129,6 @@ class PartitionMap:
 		
 		while p_curr:
 			if not p_curr.next:
-				# TODO: raise something more meaningful
 				return p_curr, idx
 				
 			if (p_curr.next.end > start and p_curr.next.start > p_curr.end):
@@ -144,7 +153,6 @@ class PartitionMap:
 		
 		while p_curr:
 			if not p_curr.next:
-				# TODO: raise something more meaningful
 				return p_curr.end
 				
 			if (p_curr.next.end > start and p_curr.next.start > p_curr.end):
@@ -183,59 +191,150 @@ class PartitionMap:
 			
 	def toStr(self):
 		s = "Disk %s: %dkB\n\n" % (self.devPath, self.devSize)
-		lines = tabulate([[p.id, p.start, p.end, p.size] for p in self.partitions], 
-			headers=["Number", "Start", "End", "Size"]).split("\n")
+		lines = tabulate([[p.id, p.start, p.end, p.size, p.filesystem, p.label] for p in self.partitions], 
+			headers=["Number", "Start", "End", "Size", "File system", "Name"]).split("\n")
 
 		del lines[1] # remove header formatting
 		s += "\n".join(lines)
 		return s
 
 class PartedParser:
+	supportedFs =  ["ext2", "ext3", "ext4",
+				"fat16", "fat32", "hfs", "jfs", 
+				"linux-swap", "ntfs", "reiserfs", "ufs", "xfs"]
+
 	def __init__(self, string):
 		self._data = string.split("\n")
 		
-	def tokenize(self):
-		return [re.sub("\s+", " ", s).strip().split(" ") for s in self._data]
+	def tokenize(self, singleSpaceToDelimiter):
+		# replace every single space between words by delimiter
+		lines = [re.sub(r'([^\s])\s([^\s])', r'\1%s\2' % (singleSpaceToDelimiter), s) for s in self._data]
+		# replace multiple spaces by just one space and tokenize every line
+		return [re.sub("\s+", " ", s).strip().split(" ") for s in lines]
 		
 	sizeVal = lambda self, sizeStr: eval(sizeStr.replace("kB", ""))
 		
 	def getPartitionMap(self):
-		lines = self.tokenize()
+		singleSpaceToDelimiter = "%"
+		lines = self.tokenize(singleSpaceToDelimiter)
 		c = 0
 		for line in lines:
 			if not line: continue
-			if line[0] == "Disk": break
+			if line[0].startswith("Disk"): break
 			c += 1
 		
+		line = line[0].split(singleSpaceToDelimiter)
 		devPath, devSize = line[1].replace(":", ""), self.sizeVal(line[2])
 			
 		for line in lines[c:]:
 			c += 1
 			if not line: continue
-			if line[0] == "Number": break
+			if line[0].startswith("Number"): break
 			
 		partitions = []
 		for line in lines[c:]:
 			if not line: break
 			id, start, end, size = eval(line[0]), self.sizeVal(line[1]), self.sizeVal(line[2]), self.sizeVal(line[3])
-			partitions.append(Partition(id, start = start, size = size, removable = True))
+			
+			fs = ""
+			label = ""
+			if len(line) == 5:
+				if line[4] in self.supportedFs:
+					fs = line[4]
+				else:
+					label = line[4]
+			elif len(line) == 6:
+				fs, label = line[4], line[5]
+
+			label = label.replace(singleSpaceToDelimiter, " ")
+			partitions.append(Partition(id, start = start, size = size, removable = True,
+						filesystem = fs, label = label))
 		return PartitionMap(devPath, devSize, partitions)
 		
-def repartDev(partedParser, startPos, partIdsToRemove, partsSizesToCreate):
-	pp = partedParser
-	pm = pp.getPartitionMap()
-	p_ids = [p.id for p in pm.partitions]
-	
-	for id in partIdsToRemove:
-		if id in p_ids:
-			pm.removePartition(id)
-		else:
-			print("warning: skipping non-existing partition %d" % id)
-
-	for size in partsSizesToCreate:
-		new_id = pm.getMkpartId()
-		p = Partition(id = new_id, start = startPos, size = size)
-		pm.createPartition(p, start = p.start)
-		startPos += size
+class PartedScript:
+	def __init__(self, partitionMap, umountFlags, startPos, partIdsToRemove, partSizesToCreate, part2Label = {}):
+		self.umountFlags = umountFlags
+		self.partitionMap = partitionMap
+		self.startPos = startPos
+		self.partIdsToRemove = partIdsToRemove
 		
-	return pm
+		for p_id in self.partIdsToRemove:
+			assert(self.partitionMap.getPartitionById(p_id)[0].isRemovable())
+			
+		self.partSizesToCreate = partSizesToCreate
+		self.part2Label = part2Label
+	
+	def repartDev(self):
+		pm = self.partitionMap
+		startPos = self.startPos
+		p_ids = []
+		self.partIdsToRecreate = []
+		
+		for p in pm.partitions:
+			p_ids.append(p.id)
+			if p.id in self.part2Label.keys():
+				p.setRemovable(True)
+	
+		for id in self.partIdsToRemove:
+			if id in p_ids:
+				pm.removePartition(id)
+			else:
+				print("warning: skipping non-existing partition %d" % id)
+
+		for size in self.partSizesToCreate:
+			new_id = pm.getMkpartId()
+			label = ""
+			removable = False
+		
+			if new_id in self.part2Label.keys():
+				label = self.part2Label[new_id]
+				removable = True
+
+			p = Partition(id = new_id, start = startPos, size = size, label = label, removable = removable)
+		
+			pm.createPartition(p, start = p.start)
+			self.partIdsToRecreate.append(new_id)
+			
+			startPos += size
+		
+		return pm
+		
+	def generate(self):
+		s = """#!/sbin/sh
+#-------------------------------------------------#
+#                 CWM ReParted                    #  
+#-------------------------------------------------#
+
+MMC=%s
+""" % (self.partitionMap.devPath)
+
+		for p_id, label in self.part2Label.items():
+			s += "%s=%d\n" % (label, p_id)
+			
+		s += "p=p\n\n"
+		s += "# umount partitions\n"
+		for p_id, label in self.part2Label.items():
+			umountFlags = ""
+			if p_id in self.umountFlags.keys():
+				umountFlags = self.umountFlags[p_id]
+
+			s += "umount %s $MMC$p$%s\n" % (umountFlags, label)
+				
+		s += "\n# remove partitions\n"
+
+		for p_id in self.partIdsToRemove:
+			#p = self.partitionMap.getPartitionById(p_id)
+			label = self.part2Label[p_id]
+			s += "parted $MMC rm $%s\n" % (label)
+			
+		s += "\n# re-create partitions\n"
+		for p_id in self.partIdsToRecreate:
+			p = self.partitionMap.getPartitionById(p_id)[0]
+			s += "# %s\n" % self.part2Label[p_id]
+			s += "parted $MMC mkpart primary %d %d\n" % (p.start, p.end)
+			
+		s += "\n# assign labels\n"
+		for p_id, label in self.part2Label.items():
+			s += "parted $MMC name $%s %s\n" % (label, label)
+			
+		return s
