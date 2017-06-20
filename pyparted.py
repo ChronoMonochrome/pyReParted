@@ -2,6 +2,7 @@ import re
 from tabulate import tabulate
 
 INVALPOS = INVALSIZE = -1
+SZ_1K = 1024
 
 codinaPart2Label = {
 	3: "SYSTEM",
@@ -34,14 +35,20 @@ def test():
 	return [p10, p6, p7, p2, p14, p16, p1, p12, p13, p15, p17, p3, p4, p5, p8, p9, p11]
 
 class Partition:
-	def __init__(self, id, start = INVALPOS, size = INVALSIZE, removable = False, filesystem = "", label = ""):
-		assert(size != INVALSIZE)
+	def __init__(self, id, start, size, align = 64 * SZ_1K,
+				removable = False, filesystem = "", label = ""):
+				
 		self.id = id
-		self.size = size
 		self.start = start
 		self.removable = removable
 		self.filesystem = filesystem
 		self.label = label
+		if align:
+			# round down
+			size //= align
+			size *= align
+			
+		self.size = size
 		self.end = self.start + self.size
 			
 	def assignLabel(self, label):
@@ -102,8 +109,10 @@ class PartitionMap:
 		self.partitions.insert(p_last_idx + 1, partition)
 
 	def removePartition(self, id):
-		p, p_idx = self.getPartitionById(id)
+		p = self.getPartitionById(id)
 		assert(p.removable)
+		
+		# p.prev => p => p.next
 		
 		if p.prev:
 			p.prev.next = p.next
@@ -111,14 +120,23 @@ class PartitionMap:
 		if p.next:
 			p.next.prev = p.prev
 			
-		del p
-		del self.partitions[p_idx]
+		# p.prev => p.next
+			
+		self.delPartitionById(id)
 		
 	def getPartitionById(self, id):
+		for p in self.partitions:
+			if p.id == id:
+				return p
+				
+		raise(BaseException)
+		
+	def delPartitionById(self, id):
 		idx = 0
 		for p in self.partitions:
 			if p.id == id:
-				return p, idx
+				del self.partitions[idx]
+				return
 			idx += 1
 				
 		raise(BaseException)
@@ -168,7 +186,8 @@ class PartitionMap:
 		if p_curr.next:
 			return p_curr.next.start - p_curr.end
 		else:
-			return self.devSize - p_curr.end
+			# several latest device sectors are occupied by GPT backup header
+			return (self.devSize - 64 * SZ_1K) - p_curr.end
 
 	def ensureUniqId(self):
 		p_ids = [p.id for p in self.partitions]
@@ -212,10 +231,10 @@ class PartedParser:
 		# replace multiple spaces by just one space and tokenize every line
 		return [re.sub("\s+", " ", s).strip().split(" ") for s in lines]
 		
-	sizeVal = lambda self, sizeStr: eval(sizeStr.replace("kB", ""))
+	sizeVal = lambda self, sizeStr: eval(sizeStr.replace("B", ""))
 		
 	def getPartitionMap(self):
-		singleSpaceToDelimiter = "%"
+		singleSpaceToDelimiter = "%20"
 		lines = self.tokenize(singleSpaceToDelimiter)
 		c = 0
 		for line in lines:
@@ -258,8 +277,13 @@ class PartedScript:
 		self.startPos = startPos
 		self.partIdsToRemove = partIdsToRemove
 		
+		p_ids = [p.id for p in self.partitionMap.partitions]
+		
 		for p_id in self.partIdsToRemove:
-			assert(self.partitionMap.getPartitionById(p_id)[0].isRemovable())
+			if p_id in p_ids:
+				assert(self.partitionMap.getPartitionById(p_id).isRemovable())
+			else:
+				print("PartedScript: warning: skipping partition %d" % p_id)
 			
 		self.partSizesToCreate = partSizesToCreate
 		self.part2Label = part2Label
@@ -299,27 +323,28 @@ class PartedScript:
 		
 		return pm
 		
-	def generate(self):
-		s = """#!/sbin/sh
-#-------------------------------------------------#
-#                 CWM ReParted                    #  
-#-------------------------------------------------#
-
-MMC=%s
-""" % (self.partitionMap.devPath)
+	def generate(self, unitTest = False):
+		s =  "#!/sbin/sh\n"
+		s += "#-------------------------------------------------#\n"
+		s += "#                 CWM ReParted                    #\n" 
+		s += "#-------------------------------------------------#\n\n"
+		
+		s += "MMC=%s\n"	% (self.partitionMap.devPath)
 
 		for p_id, label in self.part2Label.items():
 			s += "%s=%d\n" % (label, p_id)
 			
 		s += "p=p\n\n"
-		s += "# umount partitions\n"
-		for p_id, label in self.part2Label.items():
-			umountFlags = ""
-			if p_id in self.umountFlags.keys():
-				umountFlags = self.umountFlags[p_id]
+		
+		if not unitTest:
+			s += "# umount partitions\n"
+			for p_id, label in self.part2Label.items():
+				umountFlags = ""
+				if p_id in self.umountFlags.keys():
+					umountFlags = self.umountFlags[p_id]
 
-			s += "umount %s $MMC$p$%s\n" % (umountFlags, label)
-				
+				s += "umount %s $MMC$p$%s\n" % (umountFlags, label)
+			
 		s += "\n# remove partitions\n"
 
 		for p_id in self.partIdsToRemove:
@@ -329,9 +354,10 @@ MMC=%s
 			
 		s += "\n# re-create partitions\n"
 		for p_id in self.partIdsToRecreate:
-			p = self.partitionMap.getPartitionById(p_id)[0]
-			s += "# %s\n" % self.part2Label[p_id]
-			s += "parted $MMC mkpart primary %d %d\n" % (p.start, p.end)
+			p = self.partitionMap.getPartitionById(p_id)
+			s += "# %s - (%d - %d kB), size %d kB\n" % \
+				(self.part2Label[p_id], p.start / 1024, p.end / 1024, p.size / 1024)
+			s += "parted $MMC unit b mkpart primary %d %d\n\n" % (p.start, p.end - 1)
 			
 		s += "\n# assign labels\n"
 		for p_id, label in self.part2Label.items():
