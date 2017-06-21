@@ -82,7 +82,7 @@ It can be useful when testing the script on a file image, before actually applyi
 #                 CWM ReParted                    #
 #-------------------------------------------------#
 
-MMC=/home/chrono/root/EMMC.img
+MMC=/dev/block/mmcblk0
 UMS=8
 SYSTEM2=9
 SYSTEM=3
