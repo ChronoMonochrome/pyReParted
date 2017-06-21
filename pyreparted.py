@@ -1,18 +1,36 @@
 import re
 from tabulate import tabulate
 
-INVALPOS = INVALSIZE = -1
+INVALPOS = INVALSIZE = INVALID = -1
 SZ_1K = 1024
+SZ_1M = 1024 ** 2
 
-codinaPart2Label = {
-	3: "SYSTEM",
-	4: "CACHEFS",
-	5: "DATAFS",
-	8: "UMS",
-	9: "SYSTEM2",
-	11: "DATAFS2"
-}
+def setRemovable(partitionMap, partitions):
+	p_ids = [p.id for p in partitionMap.partitions]
+	for p in partitions:
+		if p.id in p_ids:
+			partitionMap.getPartitionById(p.id).setRemovable(p.removable)
+	return partitionMap
 
+def getPartitions(part2Label, partSizes, startPos):
+	partitions = []
+	for l, s in zip(part2Label.values(), partSizes):
+		p = Partition(start = startPos, label = l, size = s)
+		partitions.append(p)
+		startPos += s
+	return partitions
+
+def getPartitions2(partitions, partSizes, startPos):
+	res = []
+	for p, size in zip(partitions, partSizes):
+		p.size = size
+		p.start = startPos
+		p.end = startPos + p.size
+		startPos = p.end
+		p.alignSize()
+		res.append(p)
+	return res
+	
 def test():
 	p10 = Partition(10, start = 524, size = 1049, removable = False, label = "PIT")
 	p6 = Partition(6, start = 1573, size = 1573, removable = False, label = "CSPSA FS")
@@ -33,17 +51,24 @@ def test():
 	p11 = Partition(11, start = 2972371, size = 987035, removable = True, filesystem = "ext4", label = "Data 2")
 	
 	return [p10, p6, p7, p2, p14, p16, p1, p12, p13, p15, p17, p3, p4, p5, p8, p9, p11]
+	
+class AvailableSpaceException(Exception):
+    pass
+	
+class UnsupportedFSException(Exception):
+	pass
 
 class Partition:
-	def __init__(self, id, start, size, align = 64 * SZ_1K,
-				removable = False, filesystem = "", label = ""):
+	def __init__(self, id = INVALID, start = INVALPOS, size = INVALSIZE, align = SZ_1M,
+				removable = False, filesystem = "", label = "", umountFlags = ""):
 				
 		self.id = id
 		self.start = start
 		self.removable = removable
 		self.filesystem = filesystem
 		self.label = label
-		if align:
+		self.umountFlags = umountFlags
+		if size != INVALSIZE and align:
 			# round down
 			size //= align
 			size *= align
@@ -59,8 +84,19 @@ class Partition:
 		
 	def setRemovable(self, removable):
 		self.removable = removable
+		
+	def alignSize(self, align = SZ_1M):
+		if self.size == INVALSIZE:
+			raise ValueError("cannot align partition size without the correct size set")
+	
+		self.size //= align
+		self.size *= align
 
 class PartitionMap:
+	supportedFs =  ["ext2", "ext3", "ext4",
+				"fat16", "fat32", "hfs", "jfs", 
+				"linux-swap", "ntfs", "reiserfs", "ufs", "xfs"]
+	
 	def __init__(self, devPath, devSize, partitions):
 		p_count = len(partitions)
 		
@@ -84,6 +120,7 @@ class PartitionMap:
 		self.ensureNoBogusSize()
 		self.ensureNoOverlap()
 		self.ensureUniqId()
+		self.ensureNoBogusId()
 		
 	def createPartition(self, partition, start = INVALPOS):
 		avail_space = self.getMkpartAvailSpace(start)
@@ -179,7 +216,7 @@ class PartitionMap:
 			p_curr = p_curr.next
 			
 		# should never reach here
-		raise(BaseException)
+		assert(False)
 
 	def getMkpartAvailSpace(self, pos = 0):
 		p_curr, p_idx = self.getMkpartPart(pos)
@@ -208,6 +245,10 @@ class PartitionMap:
 		for p in self.partitions:
 			assert(p.size > 0)
 			
+	def ensureNoBogusId(self):
+		for p in self.partitions:
+			assert(p.id > 0)
+			
 	def toStr(self):
 		s = "Disk %s: %dkB\n\n" % (self.devPath, self.devSize)
 		lines = tabulate([[p.id, p.start, p.end, p.size, p.filesystem, p.label] for p in self.partitions], 
@@ -218,16 +259,13 @@ class PartitionMap:
 		return s
 
 class PartedParser:
-	supportedFs =  ["ext2", "ext3", "ext4",
-				"fat16", "fat32", "hfs", "jfs", 
-				"linux-swap", "ntfs", "reiserfs", "ufs", "xfs"]
-
 	def __init__(self, string):
 		self._data = string.split("\n")
 		
 	def tokenize(self, singleSpaceToDelimiter):
 		# replace every single space between words by delimiter
-		lines = [re.sub(r'([^\s])\s([^\s])', r'\1%s\2' % (singleSpaceToDelimiter), s) for s in self._data]
+		lines = [re.sub(r'([^\s])\s([^\s])', r'\1%s\2' % \
+				(singleSpaceToDelimiter), s) for s in self._data]
 		# replace multiple spaces by just one space and tokenize every line
 		return [re.sub("\s+", " ", s).strip().split(" ") for s in lines]
 		
@@ -253,12 +291,12 @@ class PartedParser:
 		partitions = []
 		for line in lines[c:]:
 			if not line: break
-			id, start, end, size = eval(line[0]), self.sizeVal(line[1]), self.sizeVal(line[2]), self.sizeVal(line[3])
-			
+			id, start, end, size = eval(line[0]), self.sizeVal(line[1]), \
+							self.sizeVal(line[2]), self.sizeVal(line[3])
 			fs = ""
 			label = ""
 			if len(line) == 5:
-				if line[4] in self.supportedFs:
+				if line[4] in PartitionMap.supportedFs:
 					fs = line[4]
 				else:
 					label = line[4]
@@ -271,33 +309,28 @@ class PartedParser:
 		return PartitionMap(devPath, devSize, partitions)
 		
 class PartedScript:
-	def __init__(self, partitionMap, umountFlags, startPos, partIdsToRemove, partSizesToCreate, part2Label = {}):
-		self.umountFlags = umountFlags
+	def __init__(self, partitionMap):
 		self.partitionMap = partitionMap
-		self.startPos = startPos
+
+	
+	def repartDev(self, partIdsToRemove, partitions):
 		self.partIdsToRemove = partIdsToRemove
+		self.partitions = partitions
+		pm = self.partitionMap
 		
-		p_ids = [p.id for p in self.partitionMap.partitions]
+		p_ids = []
 		
+		for p in pm.partitions:
+			if p.filesystem and not p.filesystem in PartitionMap.supportedFs:
+				raise UnsupportedFSException("file system %s is not supported by parted" % p.filesystem)
+			p_ids.append(p.id)
+
 		for p_id in self.partIdsToRemove:
 			if p_id in p_ids:
 				assert(self.partitionMap.getPartitionById(p_id).isRemovable())
 			else:
 				print("PartedScript: warning: skipping partition %d" % p_id)
-			
-		self.partSizesToCreate = partSizesToCreate
-		self.part2Label = part2Label
-	
-	def repartDev(self):
-		pm = self.partitionMap
-		startPos = self.startPos
-		p_ids = []
-		self.partIdsToRecreate = []
-		
-		for p in pm.partitions:
-			p_ids.append(p.id)
-			if p.id in self.part2Label.keys():
-				p.setRemovable(True)
+
 	
 		for id in self.partIdsToRemove:
 			if id in p_ids:
@@ -305,25 +338,19 @@ class PartedScript:
 			else:
 				print("warning: skipping non-existing partition %d" % id)
 
-		for size in self.partSizesToCreate:
-			new_id = pm.getMkpartId()
-			label = ""
-			removable = False
-		
-			if new_id in self.part2Label.keys():
-				label = self.part2Label[new_id]
-				removable = True
-
-			p = Partition(id = new_id, start = startPos, size = size, label = label, removable = removable)
-		
+		self.part2Label = {}
+		self.umountFlags = {}
+		self.partIdsToRecreate = []
+		for p in self.partitions:
+			p.id = pm.getMkpartId()
+			self.part2Label[p.id] = p.label
+			self.umountFlags[p.id] = p.umountFlags
 			pm.createPartition(p, start = p.start)
-			self.partIdsToRecreate.append(new_id)
-			
-			startPos += size
+			self.partIdsToRecreate.append(p.id)
 		
 		return pm
 		
-	def generate(self, unitTest = False):
+	def generate(self, unitTest = False, ignoreAlignment = False):
 		s =  "#!/sbin/sh\n"
 		s += "#-------------------------------------------------#\n"
 		s += "#                 CWM ReParted                    #\n" 
@@ -348,7 +375,6 @@ class PartedScript:
 		s += "\n# remove partitions\n"
 
 		for p_id in self.partIdsToRemove:
-			#p = self.partitionMap.getPartitionById(p_id)
 			label = self.part2Label[p_id]
 			s += "parted $MMC rm $%s\n" % (label)
 			
@@ -357,10 +383,30 @@ class PartedScript:
 			p = self.partitionMap.getPartitionById(p_id)
 			s += "# %s - (%d - %d kB), size %d kB\n" % \
 				(self.part2Label[p_id], p.start / 1024, p.end / 1024, p.size / 1024)
-			s += "parted $MMC unit b mkpart primary %d %d\n\n" % (p.start, p.end - 1)
-			
+			s += "parted $MMC unit b mkpart primary %s %d %d %s\n\n" \
+					% ("" if not p.filesystem else p.filesystem, p.start, \
+					p.end - 1, ("i 1>/dev/null 2>1" if ignoreAlignment else ""))
+	
 		s += "\n# assign labels\n"
 		for p_id, label in self.part2Label.items():
 			s += "parted $MMC name $%s %s\n" % (label, label)
 			
 		return s
+
+codinaPart2Label = {
+	3: "SYSTEM",
+	4: "CACHEFS",
+	5: "DATAFS",
+	8: "UMS",
+	9: "SYSTEM2",
+	11: "DATAFS2"
+}
+
+codinaPartitions = [
+	Partition(id = 3, label = "SYSTEM", filesystem = "ext4", removable = True),
+	Partition(id = 4, label = "CACHEFS", filesystem = "ext4", removable = True),
+	Partition(id = 5, label = "DATAFS", filesystem = "ext4", removable = True),
+	Partition(id = 8, label = "UMS", filesystem = "fat32", removable = True),
+	Partition(id = 9, label = "SYSTEM2", filesystem = "ext4", removable = True),
+	Partition(id = 11, label = "DATAFS2", filesystem = "ext4", removable = True)
+]
