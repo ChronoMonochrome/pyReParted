@@ -73,7 +73,10 @@ Finally, produce the repartition script:
 >>> print script
 ```
 
-```bash
+Setting unitTest parameter to True will result in that the script produced will not try to unmount partitions. 
+It can be useful when testing the script on a file image, before actually applying the layout to the real device.
+
+```
 #!/sbin/sh
 #-------------------------------------------------#
 #                 CWM ReParted                    #
@@ -125,5 +128,4 @@ parted $MMC name $SYSTEM SYSTEM
 parted $MMC name $CACHEFS CACHEFS
 parted $MMC name $DATAFS DATAFS```
 
-Setting unitTest parameter to True will result in that the script produced will not try to unmount partitions. 
-It can be useful when testing the script on a file image, before actually applying the layout to the real device.
+
