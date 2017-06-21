@@ -32,7 +32,7 @@ def getPartitions2(partitions, partSizes, startPos):
 	return res
 	
 class AvailableSpaceException(Exception):
-    pass
+	pass
 	
 class UnsupportedFSException(Exception):
 	pass
