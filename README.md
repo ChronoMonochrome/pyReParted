@@ -56,7 +56,7 @@ Now assign size, start and end positions to them:
 ```        
 This will assign size to first five given partitions (this depends on the length of partSizes list parameter).
 The start position of first partition passed to this function by parameter startPos.
-Other partitions will be located right after each other.
+Other partitions will be located right after each other. Note that only first five Partition objects will be returned by getPartitions2 function.
 
 Now, virtually apply this repartition:
 ```python
