@@ -32,7 +32,7 @@ Number  Start        End          Size         File system  Name     Flags
  
 Parse the string above:
 ```python
->>> ps = PartedParser(partedOutput)
+>>> pp = PartedParser(partedOutput)
 ```
 Retrieve the partition layout:
 ```python
