@@ -3,7 +3,7 @@ A python module to simulate a device repartition
 
 # Usage:
 
-We first need to get `parted unit b print` output, to parse the existing device partition layout:
+We first need to get `parted <device> unit b print` output, to parse the existing device partition layout:
 ```python
 >>> partedOutput = """Model:  (file)
 Disk /home/chrono/root/EMMC.img: 3959422976B
@@ -65,7 +65,7 @@ Now, virtually apply this repartition:
 ```
 
 This will remove partitions with IDs 3, 4, 5, 8 and 9 and create partitions passed by `partitions` parameter.
-If some error will occur, e.g. partitions can't fit on this device, and exception will be arisen.
+If some error will occur, e.g. partitions can't fit on this device, an exception will be arisen.
 
 Finally, produce the repartition script:
 ```python
@@ -74,6 +74,7 @@ Finally, produce the repartition script:
 ```
 
 ```bash
+#!/sbin/sh
 #-------------------------------------------------#
 #                 CWM ReParted                    #
 #-------------------------------------------------#
