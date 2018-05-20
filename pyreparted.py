@@ -5,6 +5,14 @@ INVALPOS = INVALSIZE = INVALID = -1
 SZ_1K = 1024
 SZ_1M = 1024 ** 2
 
+FORMAT_TOOLS = {
+	"ext4": "mke2fs",
+	"f2fs": "mkfs.f2fs",
+	"fat16": "mkfs.fat -F 16",
+	"fat32": "mkfs.fat -F 32",
+	"vfat": "mkfs.fat -F 32"
+}
+
 def setRemovable(partitionMap, partitions):
 	p_ids = [p.id for p in partitionMap.partitions]
 	for p in partitions:
@@ -20,8 +28,10 @@ def getPartitions(part2Label, partSizes, startPos):
 		startPos += s
 	return partitions
 
-def getPartitions2(partitions, partSizes, startPos):
+def getPartitions2(partitions, startPos, partSizes = []):
 	res = []
+	if not partSizes:
+		partSizes = [p.size for p in partitions]
 	for p, size in zip(partitions, partSizes):
 		p.size = size
 		p.start = startPos
@@ -239,7 +249,7 @@ class PartitionMap:
 
 class PartedParser:
 	def __init__(self, string):
-		self._data = string.split("\n")
+		self._data = [i for i in string.split("\n") if i]
 		
 	def tokenize(self, singleSpaceToDelimiter):
 		# replace every single space between words by delimiter
@@ -270,8 +280,10 @@ class PartedParser:
 		partitions = []
 		for line in lines[c:]:
 			if not line: break
-			id, start, end, size = eval(line[0]), self.sizeVal(line[1]), \
-							self.sizeVal(line[2]), self.sizeVal(line[3])
+			#print(line)
+			id = eval(line[0])
+
+			start, end, size = self.sizeVal(line[1]), self.sizeVal(line[2]), self.sizeVal(line[3])
 			fs = ""
 			label = ""
 			if len(line) == 5:
@@ -369,6 +381,13 @@ class PartedScript:
 		s += "\n# assign labels\n"
 		for p_id, label in self.part2Label.items():
 			s += "parted $MMC name $%s %s\n" % (label, label)
+
+		s += "\n# format partitions\n"
+		for p_id in self.partIdsToRecreate:
+			p = self.partitionMap.getPartitionById(p_id)
+			fmt_tool = FORMAT_TOOLS[p.filesystem]
+			s += "{fmt_tool} $MMC$p${label} # {label}\n".format(
+					fmt_tool = fmt_tool, label = p.label)
 			
 		return s
 
